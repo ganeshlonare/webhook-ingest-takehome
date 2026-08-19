@@ -86,3 +86,22 @@ func TestUpsertCallThenMarkRecordingProcessed(t *testing.T) {
 		t.Fatal("expected recording_processed to be true")
 	}
 }
+
+func TestInsertEventRejectsDuplicateEventID(t *testing.T) {
+	s := testutil.NewStore(t)
+	eventID, callID, accountID := testutil.IDs(t, s)
+	ctx := context.Background()
+
+	evt := store.Event{
+		EventID: eventID, CallID: callID, AccountID: accountID,
+		Status: "completed", DurationSec: 10, Payload: []byte(`{}`),
+	}
+
+	if err := s.InsertEvent(ctx, evt); err != nil {
+		t.Fatalf("first InsertEvent: %v", err)
+	}
+
+	if err := s.InsertEvent(ctx, evt); err == nil {
+		t.Fatal("second InsertEvent succeeded; want duplicate event_id to be rejected")
+	}
+}

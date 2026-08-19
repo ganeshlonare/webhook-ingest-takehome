@@ -81,6 +81,59 @@ func (s *Store) InsertEvent(ctx context.Context, e Event) error {
 	return err
 }
 
+// IngestEvent records a new webhook and its durable side effects atomically.
+func (s *Store) IngestEvent(ctx context.Context, e Event) (inserted bool, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var eventID string
+	err = tx.QueryRow(ctx,
+		`INSERT INTO events (event_id, call_id, account_id, payload)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (event_id) DO NOTHING
+		 RETURNING event_id`,
+		e.EventID, e.CallID, e.AccountID, e.Payload).Scan(&eventID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if err := tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO calls (call_id, account_id, status, duration_sec, recording_url, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, now())
+		 ON CONFLICT (call_id) DO UPDATE SET
+		     status        = EXCLUDED.status,
+		     duration_sec  = EXCLUDED.duration_sec,
+		     recording_url = EXCLUDED.recording_url,
+		     updated_at    = now()`,
+		e.CallID, e.AccountID, e.Status, e.DurationSec, e.RecordingURL); err != nil {
+		return false, err
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO account_stats (account_id, call_count, total_duration_sec)
+		 VALUES ($1, 1, $2)
+		 ON CONFLICT (account_id) DO UPDATE SET
+		     call_count         = account_stats.call_count + 1,
+		     total_duration_sec = account_stats.total_duration_sec + EXCLUDED.total_duration_sec`,
+		e.AccountID, e.DurationSec); err != nil {
+		return false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // UpsertCall creates or refreshes the call record for this event.
 func (s *Store) UpsertCall(ctx context.Context, e Event) error {
 	_, err := s.pool.Exec(ctx,
