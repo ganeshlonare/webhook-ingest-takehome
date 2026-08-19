@@ -13,8 +13,13 @@ import (
 	"github.com/convin/webhook-ingest/internal/store"
 )
 
-// recordingWork stands in for downloading and transcoding a recording.
-const recordingWork = 50 * time.Millisecond
+const (
+	// recordingWork stands in for downloading and transcoding a recording.
+	recordingWork = 50 * time.Millisecond
+
+	// recordingTimeout bounds one recording-processing attempt.
+	recordingTimeout = time.Second
+)
 
 // Service ingests webhook deliveries.
 type Service struct {
@@ -65,8 +70,11 @@ func (s *Service) Ingest(ctx context.Context, evt Event) error {
 	// Recordings are slow to fetch, so that part does not block the provider.
 	if rec.RecordingURL != "" {
 		go func() {
-			if err := s.processRecording(ctx, rec); err != nil {
-				// TODO: handle
+			recordingCtx, cancel := context.WithTimeout(context.Background(), recordingTimeout)
+			defer cancel()
+
+			if err := s.processRecording(recordingCtx, rec); err != nil {
+				s.log.Error("process recording failed", "event_id", rec.EventID, "call_id", rec.CallID, "err", err)
 			}
 		}()
 	}
