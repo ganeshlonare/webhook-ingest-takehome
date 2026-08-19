@@ -3,12 +3,17 @@ package ingest_test
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/convin/webhook-ingest/internal/ingest"
+	"github.com/convin/webhook-ingest/internal/stats"
+	"github.com/convin/webhook-ingest/internal/store"
 	"github.com/convin/webhook-ingest/internal/testutil"
 )
 
@@ -84,6 +89,42 @@ func TestWebhookWithRecordingMarksRecordingProcessed(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("recording was not marked processed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestServiceRecoversPendingRecordings(t *testing.T) {
+	st := testutil.NewStore(t)
+	eventID, callID, accountID := testutil.IDs(t, st)
+	ctx := context.Background()
+
+	if err := st.UpsertCall(ctx, store.Event{
+		EventID: eventID, CallID: callID, AccountID: accountID,
+		Status: "completed", DurationSec: 143,
+		RecordingURL: "https://recordings.example.com/" + callID + ".wav",
+	}); err != nil {
+		t.Fatalf("UpsertCall: %v", err)
+	}
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc := ingest.New(st, stats.NewCache(), nil, log)
+	if err := svc.RecoverPendingRecordings(ctx); err != nil {
+		t.Fatalf("RecoverPendingRecordings: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		var processed bool
+		if err := st.Pool().QueryRow(ctx,
+			`SELECT recording_processed FROM calls WHERE call_id = $1`, callID).Scan(&processed); err != nil {
+			t.Fatalf("read recording state: %v", err)
+		}
+		if processed {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("pending recording was not recovered")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

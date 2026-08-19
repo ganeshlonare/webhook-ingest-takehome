@@ -40,6 +40,9 @@ func main() {
 	defer func() { _ = rdb.Close() }()
 
 	svc := ingest.New(st, stats.NewCache(), rdb, log)
+	if err := svc.RecoverPendingRecordings(ctx); err != nil {
+		log.Error("recover pending recordings", "err", err)
+	}
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: httpapi.NewRouter(svc, log)}
 
 	go func() {

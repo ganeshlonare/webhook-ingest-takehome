@@ -69,14 +69,7 @@ func (s *Service) Ingest(ctx context.Context, evt Event) error {
 
 	// Recordings are slow to fetch, so that part does not block the provider.
 	if rec.RecordingURL != "" {
-		go func() {
-			recordingCtx, cancel := context.WithTimeout(context.Background(), recordingTimeout)
-			defer cancel()
-
-			if err := s.processRecording(recordingCtx, rec); err != nil {
-				s.log.Error("process recording failed", "event_id", rec.EventID, "call_id", rec.CallID, "err", err)
-			}
-		}()
+		s.startRecordingProcessing(rec)
 	}
 
 	return nil
@@ -87,4 +80,27 @@ func (s *Service) Ingest(ctx context.Context, evt Event) error {
 func (s *Service) processRecording(ctx context.Context, rec store.Event) error {
 	time.Sleep(recordingWork)
 	return s.store.MarkRecordingProcessed(ctx, rec.CallID)
+}
+
+// RecoverPendingRecordings restarts recording work left unfinished by a prior process.
+func (s *Service) RecoverPendingRecordings(ctx context.Context) error {
+	callIDs, err := s.store.PendingRecordingCallIDs(ctx)
+	if err != nil {
+		return err
+	}
+	for _, callID := range callIDs {
+		s.startRecordingProcessing(store.Event{CallID: callID})
+	}
+	return nil
+}
+
+func (s *Service) startRecordingProcessing(rec store.Event) {
+	go func() {
+		recordingCtx, cancel := context.WithTimeout(context.Background(), recordingTimeout)
+		defer cancel()
+
+		if err := s.processRecording(recordingCtx, rec); err != nil {
+			s.log.Error("process recording failed", "event_id", rec.EventID, "call_id", rec.CallID, "err", err)
+		}
+	}()
 }
