@@ -98,6 +98,7 @@ func TestServiceRecoversPendingRecordings(t *testing.T) {
 	st := testutil.NewStore(t)
 	eventID, callID, accountID := testutil.IDs(t, st)
 	ctx := context.Background()
+	emptyRecordingCallID := callID + "_empty_recording"
 
 	if err := st.UpsertCall(ctx, store.Event{
 		EventID: eventID, CallID: callID, AccountID: accountID,
@@ -105,6 +106,12 @@ func TestServiceRecoversPendingRecordings(t *testing.T) {
 		RecordingURL: "https://recordings.example.com/" + callID + ".wav",
 	}); err != nil {
 		t.Fatalf("UpsertCall: %v", err)
+	}
+	if err := st.UpsertCall(ctx, store.Event{
+		EventID: eventID + "_empty_recording", CallID: emptyRecordingCallID, AccountID: accountID,
+		Status: "completed", DurationSec: 143,
+	}); err != nil {
+		t.Fatalf("UpsertCall without recording URL: %v", err)
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -121,12 +128,21 @@ func TestServiceRecoversPendingRecordings(t *testing.T) {
 			t.Fatalf("read recording state: %v", err)
 		}
 		if processed {
-			return
+			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("pending recording was not recovered")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+
+	var emptyRecordingProcessed bool
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT recording_processed FROM calls WHERE call_id = $1`, emptyRecordingCallID).Scan(&emptyRecordingProcessed); err != nil {
+		t.Fatalf("read empty recording state: %v", err)
+	}
+	if emptyRecordingProcessed {
+		t.Fatal("call without a recording URL was incorrectly marked processed")
 	}
 }
 

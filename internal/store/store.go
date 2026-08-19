@@ -162,6 +162,7 @@ func (s *Store) PendingRecordingCallIDs(ctx context.Context) ([]string, error) {
 		`SELECT call_id
 		 FROM calls
 		 WHERE recording_url IS NOT NULL
+		   AND recording_url <> ''
 		   AND recording_processed = FALSE
 		 ORDER BY call_id`)
 	if err != nil {
